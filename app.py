@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 import io
 from typing import List
 
@@ -12,41 +15,28 @@ from scanner import uploaded_file_to_cv2_image, camera_input_to_cv2_image
 
 
 def init_session_state() -> None:
-    """
-    Initialize Streamlit session state keys used to store page texts.
-    """
     if "page_texts" not in st.session_state:
-        st.session_state["page_texts"] = []  # List[str]
+        st.session_state["page_texts"] = []
 
 
 def process_image(image_bgr: np.ndarray, ocr_engine) -> str:
-    """
-    Run full pipeline on a single image:
-    - Detect and warp document.
-    - Preprocess for OCR.
-    - Extract text using OCR engine.
-
-    Returns extracted text (possibly empty string on failure).
-    """
     try:
-        # Detect and warp the document region
-        warped = detect_and_warp_document(image_bgr)
+        # For AI vision backends (groq, gemini, claude),
+        # skip preprocessing — send original image directly
+        if ocr_engine.backend in ("groq", "gemini", "claude"):
+            text = ocr_engine.extract_text(image_bgr)
+        else:
+            # EasyOCR needs preprocessing to work well
+            warped = detect_and_warp_document(image_bgr)
+            preprocessed = preprocess_for_ocr(warped)
+            text = ocr_engine.extract_text(preprocessed)
 
-        # Preprocess for OCR (grayscale, threshold, denoise)
-        preprocessed = preprocess_for_ocr(warped)
-
-        # OCR expects RGB or grayscale. Our preprocessed image is single-channel.
-        text = ocr_engine.extract_text(preprocessed)
         return text.strip()
     except Exception as exc:
         st.error(f"Failed to process image: {exc}")
         return ""
 
-
 def add_pages_to_session(texts: List[str]) -> None:
-    """
-    Append non-empty page texts to the session state list.
-    """
     for text in texts:
         cleaned = text.strip()
         if cleaned:
@@ -54,14 +44,6 @@ def add_pages_to_session(texts: List[str]) -> None:
 
 
 def main() -> None:
-    """
-    Main Streamlit application entry point.
-    Provides UI for:
-    - Image upload
-    - Webcam scanning
-    - Text preview
-    - DOCX export
-    """
     st.set_page_config(page_title="Handwritten Notes Scanner", layout="wide")
     st.title("📝 Handwritten Notes Scanner")
     st.write(
@@ -71,8 +53,11 @@ def main() -> None:
 
     init_session_state()
 
-    # Build and cache OCR engine (reused for all pages to improve performance)
     ocr_engine = build_ocr_engine()
+    if ocr_engine.backend == "groq":
+        st.toast("Using Groq Vision API (free + accurate)", icon="✨")
+    else:
+        st.toast("Using EasyOCR — set GROQ_API_KEY for better accuracy", icon="ℹ️")
 
     tab_upload, tab_webcam, tab_review = st.tabs(
         ["📁 Upload Images", "📷 Webcam Scan", "📄 Review & Export"]
@@ -115,7 +100,6 @@ def main() -> None:
 
     with tab_webcam:
         st.subheader("Scan Page Using Webcam")
-
         st.write(
             "Use your webcam to capture an image of your handwritten page. "
             "Ensure good lighting and the page fills most of the frame."
@@ -152,7 +136,6 @@ def main() -> None:
                 "You can edit any page before exporting to Word."
             )
 
-            # Allow users to edit individual pages
             updated_page_texts: List[str] = []
             for i, page_text in enumerate(page_texts, start=1):
                 edited_text = st.text_area(
@@ -163,15 +146,12 @@ def main() -> None:
                 )
                 updated_page_texts.append(edited_text)
 
-            # Replace with edited content
             st.session_state["page_texts"] = updated_page_texts
 
-            # Option to clear all pages
             if st.button("Clear All Pages"):
                 st.session_state["page_texts"] = []
                 st.success("Cleared all stored pages.")
 
-            # Export section
             if st.session_state["page_texts"]:
                 st.subheader("Export to Word Document")
 

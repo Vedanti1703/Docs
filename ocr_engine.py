@@ -1,77 +1,93 @@
 from dataclasses import dataclass
-from typing import List, Optional
+import base64
+import os
 
-import easyocr
+import cv2
 import numpy as np
 import streamlit as st
+from groq import Groq
 
 
 @dataclass
 class OCREngine:
-    """
-    Wrapper around EasyOCR Reader for handwritten text recognition.
-    """
-
-    reader: easyocr.Reader
+    client: object = None
+    fallback_reader: object = None
+    backend: str = "none"
 
     def extract_text(self, image: np.ndarray) -> str:
-        """
-        Extract text from the given image using EasyOCR.
+        if self.client is not None:
+            return self._extract_with_groq(image)
+        elif self.fallback_reader is not None:
+            return self._extract_with_easyocr(image)
+        else:
+            raise RuntimeError("No OCR backend available.")
 
-        Parameters
-        ----------
-        image : np.ndarray
-            Input image (grayscale or RGB/BGR). If BGR, EasyOCR will handle it.
-
-        Returns
-        -------
-        str
-            Concatenated recognized text.
-        """
-        # EasyOCR expects RGB or grayscale; it can handle most OpenCV images directly.
+    def _extract_with_groq(self, image: np.ndarray) -> str:
         try:
-            # detail=0 -> only text strings; paragraph=True -> group nearby lines
-            results = self.reader.readtext(image, detail=0, paragraph=True)
-            # Join non-empty segments with newlines
+            if len(image.shape) == 2:
+                image_rgb = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+            else:
+                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+            _, buffer = cv2.imencode(".jpg", image_rgb, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            b64_image = base64.b64encode(buffer).decode("utf-8")
+
+            response = self.client.chat.completions.create(
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{b64_image}"
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": (
+                                    "You are a handwriting transcription expert. "
+                                    "Carefully read all handwritten text in this image and transcribe it exactly as written. "
+                                    "Preserve the original line breaks and paragraph structure. "
+                                    "If you see headings or titles, start them on their own line. "
+                                    "If you see bullet points or numbered lists, preserve that structure. "
+                                    "Output ONLY the transcribed text, no explanations."
+                                ),
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=4096,
+            )
+            return response.choices[0].message.content.strip()
+
+        except Exception as exc:
+            raise RuntimeError(f"Groq extraction failed: {exc}") from exc
+
+    def _extract_with_easyocr(self, image: np.ndarray) -> str:
+        try:
+            results = self.fallback_reader.readtext(image, detail=0, paragraph=True)
             cleaned_lines = [r.strip() for r in results if isinstance(r, str) and r.strip()]
             return "\n".join(cleaned_lines)
         except Exception as exc:
             raise RuntimeError(f"EasyOCR extraction failed: {exc}") from exc
 
 
-@st.cache_resource(show_spinner=True)
-def build_ocr_engine(
-    languages: Optional[List[str]] = None,
-    gpu: bool = False,
-) -> OCREngine:
-    """
-    Build and cache an OCREngine instance using EasyOCR.
+@st.cache_resource(show_spinner="Loading OCR engine...")
+def build_ocr_engine() -> OCREngine:
+    api_key = os.environ.get("GROQ_API_KEY")
 
-    Caching via Streamlit ensures the heavy EasyOCR model is loaded only once,
-    significantly improving performance across multiple scans.
-
-    Parameters
-    ----------
-    languages : list of str, optional
-        List of language codes for EasyOCR. Defaults to ["en"].
-    gpu : bool, optional
-        Whether to use GPU acceleration for OCR. Defaults to False.
-
-    Returns
-    -------
-    OCREngine
-        Initialized OCR engine.
-    """
-    if languages is None:
-        languages = ["en"]
+    if api_key:
+        try:
+            client = Groq(api_key=api_key)
+            return OCREngine(client=client, backend="groq")
+        except Exception as exc:
+            pass
 
     try:
-        reader = easyocr.Reader(languages, gpu=gpu)
-    except Exception as exc:
-        # If GPU initialization fails, try CPU as a fallback
-        if gpu:
-            reader = easyocr.Reader(languages, gpu=False)
-        else:
-            raise RuntimeError(f"Failed to initialize EasyOCR: {exc}") from exc
-
-    return OCREngine(reader=reader)
+        import easyocr
+        reader = easyocr.Reader(["en"], gpu=False)
+        return OCREngine(fallback_reader=reader, backend="easyocr")
+    except ImportError:
+        raise RuntimeError("No OCR backend available. Set GROQ_API_KEY or install easyocr.")
