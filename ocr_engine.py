@@ -11,16 +11,13 @@ from groq import Groq
 @dataclass
 class OCREngine:
     client: object = None
-    fallback_reader: object = None
     backend: str = "none"
 
     def extract_text(self, image: np.ndarray) -> str:
         if self.client is not None:
             return self._extract_with_groq(image)
-        elif self.fallback_reader is not None:
-            return self._extract_with_easyocr(image)
         else:
-            raise RuntimeError("No OCR backend available.")
+            raise RuntimeError("No OCR backend available. Please set GROQ_API_KEY.")
 
     def _extract_with_groq(self, image: np.ndarray) -> str:
         try:
@@ -65,14 +62,6 @@ class OCREngine:
         except Exception as exc:
             raise RuntimeError(f"Groq extraction failed: {exc}") from exc
 
-    def _extract_with_easyocr(self, image: np.ndarray) -> str:
-        try:
-            results = self.fallback_reader.readtext(image, detail=0, paragraph=True)
-            cleaned_lines = [r.strip() for r in results if isinstance(r, str) and r.strip()]
-            return "\n".join(cleaned_lines)
-        except Exception as exc:
-            raise RuntimeError(f"EasyOCR extraction failed: {exc}") from exc
-
 
 @st.cache_resource(show_spinner="Loading OCR engine...")
 def build_ocr_engine() -> OCREngine:
@@ -83,11 +72,8 @@ def build_ocr_engine() -> OCREngine:
             client = Groq(api_key=api_key)
             return OCREngine(client=client, backend="groq")
         except Exception as exc:
-            pass
+            raise RuntimeError(f"Failed to initialize Groq: {exc}")
 
-    try:
-        import easyocr
-        reader = easyocr.Reader(["en"], gpu=False)
-        return OCREngine(fallback_reader=reader, backend="easyocr")
-    except ImportError:
-        raise RuntimeError("No OCR backend available. Set GROQ_API_KEY or install easyocr.")
+    raise RuntimeError(
+        "GROQ_API_KEY not set. Please add it in Render environment variables."
+    )
