@@ -19,15 +19,19 @@ def init_session_state() -> None:
         st.session_state["page_texts"] = []
 
 
-def process_image(image_bgr: np.ndarray, ocr_engine) -> str:
+def process_image(image_bgr, ocr_engine):
     try:
-        # For AI vision backends (groq, gemini, claude),
-        # skip preprocessing — send original image directly
-        if ocr_engine.backend in ("groq", "gemini", "claude"):
-            text = ocr_engine.extract_text(image_bgr)
+        # CV step - detect and crop document
+        # This actively helps Groq by removing
+        # background and straightening the page
+        warped = detect_and_warp_document(image_bgr)
+
+        if ocr_engine.backend == "groq":
+            # Send cropped color image to Groq
+            # CV cropped it, Groq reads it
+            text = ocr_engine.extract_text(warped)
         else:
-            # EasyOCR needs preprocessing to work well
-            warped = detect_and_warp_document(image_bgr)
+            # Full preprocessing for EasyOCR
             preprocessed = preprocess_for_ocr(warped)
             text = ocr_engine.extract_text(preprocessed)
 
