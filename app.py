@@ -200,7 +200,7 @@ def _tab_upload(ocr_engine, settings: dict) -> None:
 
     uploaded_files = st.file_uploader(
         "Drop images here or click to browse",
-        type=["png", "jpg", "jpeg", "bmp", "tiff"],
+        type=["png", "jpg", "jpeg", "bmp", "tiff", "pdf"],
         accept_multiple_files=True,
         label_visibility="collapsed",
     )
@@ -219,43 +219,62 @@ def _tab_upload(ocr_engine, settings: dict) -> None:
 
     # ── Thumbnail + quality preview grid ─────────────────────
     st.markdown(f"**{len(uploaded_files)} file(s) selected — preview:**")
-    thumb_cols = st.columns(min(len(uploaded_files), 4))
-    images_bgr: List[np.ndarray] = []
+    thumb_cols = st.columns(4)
+    processed_items = []
 
-    for i, f in enumerate(uploaded_files):
-        try:
-            img = uploaded_file_to_cv2_image(f)
-            images_bgr.append(img)
+    for f in uploaded_files:
+        if f.name.lower().endswith(".pdf"):
+            try:
+                import fitz
+                doc = fitz.open(stream=f.getvalue(), filetype="pdf")
+                for page_num in range(len(doc)):
+                    page = doc.load_page(page_num)
+                    pix = page.get_pixmap(dpi=200)
+                    img_array = np.frombuffer(pix.tobytes("png"), np.uint8)
+                    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                    processed_items.append((f"{f.name} (Pg {page_num+1})", img, None))
+            except Exception as e:
+                processed_items.append((f.name, None, e))
+        else:
+            try:
+                img = uploaded_file_to_cv2_image(f)
+                processed_items.append((f.name, img, None))
+            except Exception as e:
+                processed_items.append((f.name, None, e))
+
+    for i, item in enumerate(processed_items):
+        name, img, err = item
+        if img is not None:
             col = thumb_cols[i % 4]
             with col:
                 rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                st.image(rgb, caption=f.name, width="stretch")
+                st.image(rgb, caption=name, width="stretch")
                 render_quality_badge(img)
-        except Exception as e:
-            images_bgr.append(None)
-            st.warning(f"Could not load {f.name}: {e}")
+        else:
+            st.warning(f"Could not load {name}: {err}")
 
     st.markdown("---")
 
-    if st.button("🚀 Process All Images", type="primary", use_container_width=True):
+    if st.button("🚀 Process All Files", type="primary", use_container_width=True):
         new_results = []
         step_ph = st.empty()
         prog = st.progress(0.0, text="Starting…")
-        total = len(uploaded_files)
+        total = len(processed_items)
 
-        for idx, (f, img) in enumerate(zip(uploaded_files, images_bgr)):
+        for idx, item in enumerate(processed_items):
+            name, img, _ = item
             if img is None:
-                prog.progress((idx + 1) / total, text=f"Skipping {f.name} (load error)…")
+                prog.progress((idx + 1) / total, text=f"Skipping {name} (load error)…")
                 continue
 
-            prog.progress(idx / total, text=f"Processing {f.name} ({idx+1}/{total})…")
+            prog.progress(idx / total, text=f"Processing {name} ({idx+1}/{total})…")
 
             result = _process_image(
                 img,
                 ocr_engine.client,
                 settings,
                 step_ph,
-                filename=f.name,
+                filename=name,
             )
             if result:
                 new_results.append(result)
